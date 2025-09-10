@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Multi-Password + Google Sheet + Device Blocklist</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 40px; max-width: 500px; margin: auto; text-align: center; }
+    input { padding: 8px; margin: 10px 0; width: 100%; box-sizing: border-box; }
+    #status { margin-top: 10px; font-weight: bold; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/blueimp-md5/2.19.0/js/md5.min.js"></script>
+</head>
+<body>
+  <h2>User Login</h2>
+
+  <label>Name:</label>
+  <input type="text" id="nameInput" readonly>
+
+  <label>Password:</label>
+  <input type="password" id="passwordInput" placeholder="Enter your password" autocomplete="off">
+
+  <p id="status"></p>
+
+  <script>
+    const encodedURL = "pX+uWW6TS6EtEo3BvsYqhuNirEozxhbpaBaagA==";
+    const passwordsKey = "passwordHashes";
+    const webAppURL = "https://script.google.com/macros/s/AKfycbxBPGlLWyRa5L0pizjrmjFdh1gFYJkjn7NgGRm0lvvCWonzt0ZLeiW1m7GjPD-cH28K5Q/exec"; // Replace with your deployed Google Apps Script URL
+    const githubBlocklistURL = "https://raw.githubusercontent.com/POV-I-GOATED/asdd/refs/heads/main/goated.txt"; // your GitHub txt
+    const deviceHashKey = "deviceHash";
+    const deviceSentKey = "deviceSent";
+
+    function generateHash() {
+      const array = new Uint32Array(4);
+      crypto.getRandomValues(array);
+      return Array.from(array, dec => dec.toString(16).padStart(8, '0')).join('');
+    }
+
+    function getDeviceHash() {
+      let h = localStorage.getItem(deviceHashKey);
+      if (!h) {
+        h = generateHash();
+        localStorage.setItem(deviceHashKey, h);
+      }
+      return h;
+    }
+
+    function getUserHash() { return localStorage.getItem('userHash'); }
+    function getUserName() { return localStorage.getItem('userName'); }
+    function getSavedPasswordHashes() {
+      const data = localStorage.getItem(passwordsKey);
+      return data ? JSON.parse(data) : [];
+    }
+    function savePasswordHash(hash) {
+      const hashes = getSavedPasswordHashes();
+      if (!hashes.includes(hash)) {
+        hashes.push(hash);
+        localStorage.setItem(passwordsKey, JSON.stringify(hashes));
+      }
+    }
+
+    function md5ToBytes(hash) {
+      const bytes = [];
+      for (let i = 0; i < hash.length; i += 2) {
+        bytes.push(parseInt(hash.substr(i, 2), 16));
+      }
+      return new Uint8Array(bytes);
+    }
+
+    function decodeString(encoded, password) {
+      try {
+        const key = md5ToBytes(md5(password));
+        const bin = atob(encoded);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) {
+          bytes[i] = bin.charCodeAt(i) ^ key[i % key.length];
+        }
+        return new TextDecoder().decode(bytes);
+      } catch {
+        return null;
+      }
+    }
+
+    function openPopup(url) {
+      const width = screen.availWidth;
+      const height = screen.availHeight;
+      const popup = window.open("", "popup", `width=${width},height=${height},resizable=yes,scrollbars=yes`);
+      if (!popup) { alert("Popup blocked!"); return; }
+      popup.document.write(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head><meta charset="UTF-8"><title>Protected Page</title>
+        <style>html,body{height:100%;margin:0;overflow:hidden;}iframe{width:100%;height:100%;border:none;}</style>
+        </head>
+        <body><iframe src="${url}"></iframe></body>
+        </html>
+      `);
+      popup.document.close();
+      popup.moveTo(0,0); popup.resizeTo(width,height);
+    }
+
+    async function uploadToSheet(name, data) {
+      try {
+        const formData = new URLSearchParams();
+        formData.append("name", name);
+        formData.append("data", data);
+        await fetch(webAppURL, { method: "POST", body: formData });
+      } catch (err) {
+        console.error("Failed to upload to sheet:", err);
+      }
+    }
+
+    async function isBlocked(deviceHash) {
+      try {
+        const res = await fetch(githubBlocklistURL);
+        if (!res.ok) return false;
+        const text = await res.text();
+        const blockedHashes = text.split("\n").map(line => line.trim());
+        return blockedHashes.includes(deviceHash);
+      } catch (err) {
+        console.error("Error checking blocklist:", err);
+        return false;
+      }
+    }
+
+    async function init() {
+      const deviceHash = getDeviceHash();
+      let userHash = getUserHash();
+      let name = getUserName();
+
+      if (!userHash || !name) {
+        name = prompt("Enter your name:");
+        if (!name) { document.getElementById('status').innerText = "Name required!"; return; }
+        userHash = generateHash();
+        localStorage.setItem('userHash', userHash);
+        localStorage.setItem('userName', name);
+      }
+
+      const nameInput = document.getElementById("nameInput");
+      const passwordInput = document.getElementById("passwordInput");
+      nameInput.value = name;
+
+      // Check GitHub blocklist
+      const blocked = await isBlocked(deviceHash);
+      if (blocked) {
+        document.getElementById('status').innerText = `Hi ${name}, you are blocked from accessing the site.`;
+        passwordInput.disabled = true;
+        return;
+      }
+
+      // Only send device hash + name if not sent
+      if (!localStorage.getItem(deviceSentKey)) {
+        await uploadToSheet(name, deviceHash);
+        localStorage.setItem(deviceSentKey, "true");
+      }
+
+      document.getElementById('status').innerText = `Hello ${name}! Enter your password to unlock the page.`;
+
+      passwordInput.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const password = passwordInput.value.trim();
+          if (!password) { alert("Please enter a password."); return; }
+
+          const decodedURL = decodeString(encodedURL, password);
+          if (!decodedURL || !decodedURL.startsWith("http")) {
+            alert("❌ Wrong password or corrupted data!");
+            return;
+          }
+
+          savePasswordHash(password);
+          await uploadToSheet(name, md5(password));
+          passwordInput.value = "";
+          openPopup(decodedURL);
+        }
+      });
+
+      // Auto-open saved passwords
+      const savedHashes = getSavedPasswordHashes();
+      for (let p of savedHashes) {
+        const decoded = decodeString(encodedURL, p);
+        if (decoded && decoded.startsWith("http")) {
+          openPopup(decoded);
+          break;
+        }
+      }
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
